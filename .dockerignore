@@ -1,0 +1,30 @@
+# Entornos virtuales
+.venv
+env/
+venv/
+
+# Archivos de compilación de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Archivos de logs
+*.log
+
+# Configuración de IDEs
+.vscode/
+.idea/
+
+# Archivos de Git
+.git
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+
+# Otros archivos innecesarios
+*.sqlite3
+*.db
+*.DS_Store
