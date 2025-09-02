@@ -21,13 +21,13 @@ client = genai.Client(api_key=api_key)
 # -----------------------
 origins = [
     "http://localhost",
-    "http://127.0.0.1:5173",
-    os.getenv("FRONTEND_URL", "http://localhost:5173")
+    "http://localhost:5174/chatbot.github.io/",
+    os.getenv("FRONTEND_URL", "http://localhost:5174")
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
