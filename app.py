@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 from google import genai
 from datetime import datetime
 import os
+import asyncio
+from tenacity import retry, wait_fixed, stop_after_attempt
+from google.genai.errors import ServerError
 
 # -----------------------
 # Configuración FastAPI
@@ -70,7 +73,6 @@ class ChatRequest(BaseModel):
     personaje: str = "profesor"
     description: str = ""  # nueva
 
-
 # -----------------------
 # Historial en RAM
 # -----------------------
@@ -79,37 +81,29 @@ conversations = {}
 # -----------------------
 # System prompt
 # -----------------------
-SYSTEM_PROMPT = """
-Eres un profesor de inglés para principiantes hispanohablantes.
-Tu personaje es: {personaje}.
-Descripción del personaje: {description}
+SYSTEM_PROMPT = """..."""  # manten tu prompt original
 
-📌 Instrucciones:
-
-1. Comienza hablando principalmente en español (80-90%), pero introduce **una palabra o frase simple en inglés por mensaje**.
-2. Explica el significado de la palabra en español y da un ejemplo corto.
-3. Haz que el estudiante repita o use la palabra en una frase sencilla.
-4. Mantén las respuestas **muy cortas y claras** para no saturar al estudiante.
-5. Sé amable, paciente e interactivo, corrige errores suavemente.
-6. Gradualmente puedes ir mezclando más inglés a medida que el estudiante lo entiende.
-7. Siempre adapta los ejemplos al personaje y al tema que se está enseñando.
-
-Ejemplo de interacción:
-
-Usuario: dinosaurios  
-Profesor: ¡Dinosaurios! En inglés se dice *dinosaurs*. Repite conmigo: "Dinosaurs".  
-Profesor: Los *dinosaurs* vivieron en la *Mesozoic Era*. ¿Puedes decir "Dinosaurs live a long time"?  
-
-Fin de instrucciones.
-"""
-
+# -----------------------
+# Función async para llamar a Gemini con retry
+# -----------------------
+@retry(wait=wait_fixed(2), stop=stop_after_attempt(3), retry=(lambda e: isinstance(e, ServerError)))
+async def call_genai_async(contents):
+    loop = asyncio.get_event_loop()
+    # Ejecuta la llamada síncrona de Gemini en un thread para no bloquear
+    response = await loop.run_in_executor(
+        None,
+        lambda: client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=contents
+        )
+    )
+    return response
 
 # -----------------------
 # Endpoint Chat
 # -----------------------
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
-    # Validación simple
     if not request.session_id.strip() or not request.message.strip():
         return {"error": "session_id y message son obligatorios"}
 
@@ -118,38 +112,41 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
 
     # Construir contenido para Gemini
     contents = [SYSTEM_PROMPT.format(
-    personaje=request.personaje,
-    description=request.description
+        personaje=request.personaje,
+        description=request.description
     )]
     for msg in history:
         contents.append(f"{msg['role']}: {msg['content']}")
     contents.append(f"Usuario: {request.message}\nAsistente:")
 
-    # Llamada al modelo
-    response = client.models.generate_content(
-        model="gemini-1.5-flash",
-        contents=contents,
-    )
+    # Llamada a Gemini con manejo de errores
+    try:
+        response = await call_genai_async(contents)
+        text = response.text
+        tokens = response.usage_metadata.total_token_count
+    except ServerError:
+        text = "El modelo está saturado 😅, intenta de nuevo en unos segundos."
+        tokens = 0
 
     # Guardar en RAM
     history.append({"role": "user", "content": request.message})
-    history.append({"role": "assistant", "content": response.text})
+    history.append({"role": "assistant", "content": text})
     conversations[request.session_id] = history
 
-    # Guardar en SQLite
-    interaction = Interaction(
-        session_id=request.session_id,
-        personaje=request.personaje,
-        user_message=request.message,
-        assistant_reply=response.text,
-        tokens_used=response.usage_metadata.total_token_count
-    )
-    db.add(interaction)
-    db.commit()
+    # Guardar en SQLite solo si hubo éxito
+    if tokens > 0:
+        interaction = Interaction(
+            session_id=request.session_id,
+            personaje=request.personaje,
+            user_message=request.message,
+            assistant_reply=text,
+            tokens_used=tokens
+        )
+        db.add(interaction)
+        db.commit()
 
     return {
-        "reply": response.text,
-        "tokens_used": response.usage_metadata.total_token_count,
+        "reply": text,
+        "tokens_used": tokens,
         "history_len": len(history)
     }
-
